@@ -37,12 +37,14 @@ def authorization_server_metadata(
     registration_endpoint: str,
     scopes_supported: list[str],
     code_challenge_methods: list[str] | None = None,
+    revocation_endpoint: str | None = None,
 ) -> dict[str, Any]:
     """RFC 8414 Authorization Server Metadata.
 
     接入方案 §A3: 必须含 code_challenge_methods_supported: ["S256"].
+    接入方案 §A11: revocation_endpoint 可选声明 (POST /oauth/revoke).
     """
-    return {
+    body: dict[str, Any] = {
         "issuer": issuer,
         "authorization_endpoint": authorization_endpoint,
         "token_endpoint": token_endpoint,
@@ -53,3 +55,6 @@ def authorization_server_metadata(
         "token_endpoint_auth_methods_supported": ["none"],  # public client, no secret
         "scopes_supported": scopes_supported,
     }
+    if revocation_endpoint:
+        body["revocation_endpoint"] = revocation_endpoint
+    return body

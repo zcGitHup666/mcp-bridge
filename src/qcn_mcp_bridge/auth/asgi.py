@@ -12,6 +12,8 @@
 
 Phase 2B1 Step 2: 4 个 form handler (login / register / send-code / authorize-post)
 从 Step 1 mock 改为真实调 qcn-dev (QcnDevClient) + AES-GCM 加密 session 写 bindings.
+
+Phase 2B2 Step 1: 新增 POST /oauth/revoke (RFC 7009) + 元数据声明 revocation_endpoint.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.templating import Jinja2Templates
+from pathlib import Path
 
 from qcn_mcp_bridge.auth.authorize import DEFAULT_SCOPES
 from qcn_mcp_bridge.auth.dynamic_client import (
@@ -42,9 +45,9 @@ from qcn_mcp_bridge.auth.metadata import (
     protected_resource_metadata,
 )
 from qcn_mcp_bridge.auth.qcn_dev_client import QcnDevClient
+from qcn_mcp_bridge.auth.revoke import handle_revoke   # Phase 2B2 Step 1
 from qcn_mcp_bridge.auth.storage import init_engine
 from qcn_mcp_bridge.auth.token import handle_token
-from pathlib import Path
 
 
 # Jinja2 templates (templates/*.html)
@@ -91,6 +94,7 @@ def build_oauth_asgi(
             authorization_endpoint=f"{issuer}/oauth/authorize",
             token_endpoint=f"{issuer}/oauth/token",
             registration_endpoint=f"{issuer}/oauth/register",
+            revocation_endpoint=f"{issuer}/oauth/revoke",   # Phase 2B2 Step 1
             scopes_supported=DEFAULT_SCOPES,
         ))
 
@@ -130,6 +134,28 @@ def build_oauth_asgi(
             if err is not None:
                 return err
             return JSONResponse(response)
+        finally:
+            session.close()
+
+    # ===== /oauth/revoke (RFC 7009, Phase 2B2 Step 1) =====
+    async def revoke_endpoint(request: Request):
+        form: dict[str, str] = {}
+        content_type = request.headers.get("content-type", "")
+        if "application/x-www-form-urlencoded" in content_type:
+            body_bytes = await request.body()
+            if body_bytes:
+                parsed = parse_qs(body_bytes.decode("utf-8"))
+                form = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+        elif "application/json" in content_type:
+            form = await request.json()
+        else:
+            body_bytes = await request.body()
+            if body_bytes:
+                parsed = parse_qs(body_bytes.decode("utf-8"))
+                form = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+        session = SessionLocal()
+        try:
+            return handle_revoke(session, form=form)
         finally:
             session.close()
 
@@ -207,6 +233,7 @@ def build_oauth_asgi(
         Route("/oauth-authorization-server", as_metadata_endpoint, methods=["GET"]),
         Route("/register", register_endpoint, methods=["POST"]),
         Route("/token", token_endpoint, methods=["POST"]),
+        Route("/revoke", revoke_endpoint, methods=["POST"]),   # Phase 2B2 Step 1
         Route("/authorize", authorize_get, methods=["GET"]),
         Route("/authorize", authorize_post, methods=["POST"]),
         Route("/login-form", login_form, methods=["POST"]),
