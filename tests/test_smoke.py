@@ -35,6 +35,10 @@ def _settings() -> Settings:
         qcn_bridge_jwt_key_path=":memory:",
         qcn_bridge_access_ttl=3600,
         qcn_bridge_refresh_ttl=2592000,
+        # Phase 2B1 业务参数 (按 §6.3 + 用户已确认 dev 值)
+        qcn_dev_session_ttl_seconds=3600,    # 60min (§7.1)
+        qcn_dev_kick_concurrent=True,        # 是 (§7.3)
+        qcn_dev_rate_limit_per_minute=0,     # 无限 (§7.4)
     )
 
 

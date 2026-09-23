@@ -47,6 +47,10 @@ class Settings:
     qcn_bridge_jwt_key_path: str
     qcn_bridge_access_ttl: int
     qcn_bridge_refresh_ttl: int
+    # Phase 2B1: 7 项业务参数 (按接入清单 §6.3 + 用户已确认)
+    qcn_dev_session_ttl_seconds: int   # 业务凭证有效期 (60min=3600, §7.1)
+    qcn_dev_kick_concurrent: bool        # 并发登录踢下线 (§7.3)
+    qcn_dev_rate_limit_per_minute: int   # 接口调用限额 (0=无限, §7.4)
 
 
 def _require(name: str) -> str:
@@ -80,7 +84,7 @@ def load_settings() -> Settings:
         raise ConfigError(f"MCP_HTTP_PORT 非整数: {port_raw!r}") from exc
 
     settings = Settings(
-        qcn_base_url=os.environ.get("QCN_BASE_URL", "http://localhost:8080").rstrip("/"),
+        qcn_base_url=os.environ.get("QCN_BASE_URL", "https://www.qcniu.cn/").rstrip("/"),
         qcn_jwt=_require("QCN_JWT"),
         qcn_http_timeout=timeout,
         mcp_transport=transport_raw,  # type: ignore[arg-type]
@@ -101,6 +105,10 @@ def load_settings() -> Settings:
         ),
         qcn_bridge_access_ttl=int(os.environ.get("QCN_BRIDGE_ACCESS_TTL", "3600")),
         qcn_bridge_refresh_ttl=int(os.environ.get("QCN_BRIDGE_REFRESH_TTL", str(30 * 24 * 3600))),
+        # Phase 2B1: 7 项业务参数 (按接入清单 §6.3, 用户已确认 dev 值)
+        qcn_dev_session_ttl_seconds=int(os.environ.get("QCN_DEV_SESSION_TTL_SECONDS", "3600")),  # 60min(§7.1)
+        qcn_dev_kick_concurrent=os.environ.get("QCN_DEV_KICK_CONCURRENT", "true").lower() in ("true", "1", "yes"),  # 是(§7.3)
+        qcn_dev_rate_limit_per_minute=int(os.environ.get("QCN_DEV_RATE_LIMIT_PER_MINUTE", "0")),  # 无限(§7.4)
     )
 
     # 显式回显非敏感字段, 凭证一律 <REDACTED> (CLAUDE.md §6.3.2)
