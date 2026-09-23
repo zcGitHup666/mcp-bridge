@@ -73,11 +73,15 @@ def build_oauth_asgi(
     db_path: str,
     jwt_key_path: Path,
     qcn_dev_client: QcnDevClient | None = None,
+    dev_mode: bool = False,                                 # Phase 2B2 Step 1
 ) -> Starlette:
     """构造 OAuth ASGI sub-app.
 
     qcn_dev_client: Phase 2B1 Step 2 真实调 qcn-dev (server.py 注入).
-    测试传 None 用 mock (Step 1 兼容, Phase 2B1 Step 1 测试用).
+                    测试传 None 用 mock (Step 1 兼容, Phase 2B1 Step 1 测试用).
+    dev_mode:        dev backdoor (QCN_BRIDGE_DEV_LOGIN=true 时打开), 短路
+                    /oauth/send-code + /oauth/login-form, 不真打 qcn-dev.
+                    仅本地 / CI 测试用, 生产必须 false.
     """
     engine, SessionLocal = init_engine(db_path)
     jwt_signer = JWTSigner(jwt_key_path, issuer=issuer, audience=resource)
@@ -223,9 +227,13 @@ def build_oauth_asgi(
         from unittest.mock import MagicMock
         qcn_dev_client = MagicMock()
 
-    login_form = make_login_form_handler(qcn_dev=qcn_dev_client, SessionLocal=SessionLocal)
+    login_form = make_login_form_handler(
+        qcn_dev=qcn_dev_client, SessionLocal=SessionLocal, dev_mode=dev_mode,  # Phase 2B2 Step 1
+    )
     register_form = make_register_form_handler(qcn_dev=qcn_dev_client, SessionLocal=SessionLocal)
-    send_code = make_send_code_handler(qcn_dev=qcn_dev_client)
+    send_code = make_send_code_handler(
+        qcn_dev=qcn_dev_client, dev_mode=dev_mode,   # Phase 2B2 Step 1
+    )
     authorize_post = make_authorize_post_handler(SessionLocal=SessionLocal)
 
     return Starlette(routes=[

@@ -51,6 +51,8 @@ class Settings:
     qcn_dev_session_ttl_seconds: int   # 业务凭证有效期 (60min=3600, §7.1)
     qcn_dev_kick_concurrent: bool        # 并发登录踢下线 (§7.3)
     qcn_dev_rate_limit_per_minute: int   # 接口调用限额 (0=无限, §7.4)
+    # Phase 2B2 Step 1: dev 后门 (本地 / CI 测试用, 生产必须 false)
+    qcn_bridge_dev_login: bool = False
 
 
 def _require(name: str) -> str:
@@ -109,11 +111,14 @@ def load_settings() -> Settings:
         qcn_dev_session_ttl_seconds=int(os.environ.get("QCN_DEV_SESSION_TTL_SECONDS", "3600")),  # 60min(§7.1)
         qcn_dev_kick_concurrent=os.environ.get("QCN_DEV_KICK_CONCURRENT", "true").lower() in ("true", "1", "yes"),  # 是(§7.3)
         qcn_dev_rate_limit_per_minute=int(os.environ.get("QCN_DEV_RATE_LIMIT_PER_MINUTE", "0")),  # 无限(§7.4)
+        # Phase 2B2 Step 1: dev 后门开关 (默认 false, 生产必须 false)
+        qcn_bridge_dev_login=os.environ.get("QCN_BRIDGE_DEV_LOGIN", "false").lower() in ("true", "1", "yes"),
     )
 
     # 显式回显非敏感字段, 凭证一律 <REDACTED> (CLAUDE.md §6.3.2)
     log.info(
-        "bridge config: base_url=%s timeout=%ss transport=%s http=%s:%s%s log=%s jwt=<REDACTED>",
+        "bridge config: base_url=%s timeout=%ss transport=%s http=%s:%s%s log=%s "
+        "jwt=<REDACTED> dev_login=%s",
         settings.qcn_base_url,
         settings.qcn_http_timeout,
         settings.mcp_transport,
@@ -121,5 +126,6 @@ def load_settings() -> Settings:
         settings.mcp_http_port,
         settings.mcp_http_path,
         settings.log_level,
+        settings.qcn_bridge_dev_login,
     )
     return settings

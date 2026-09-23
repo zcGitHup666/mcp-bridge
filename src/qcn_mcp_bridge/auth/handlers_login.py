@@ -2,12 +2,17 @@
 
 调用 qcn-dev 真实接口 (替换 Step 1 mock) + AES-GCM 加密 session 写 bindings (§B7).
 
+Phase 2B2 Step 1 加: QCN_BRIDGE_DEV_LOGIN=true 时 /oauth/send-code 与 /oauth/login-form
+                   短路 qcn-dev, 验证码走进程内 DEV_PENDING_CODES (one-time use).
+
 按 CLAUDE §4.5 出参类型 dict / RedirectResponse / JSONResponse.
 按 CLAUDE §6.3.2: 不打印 token / session / 手机号验证码.
 按 CLAUDE §4.1: 单文件 ≤ 300 行.
 """
 from __future__ import annotations
 
+import logging
+import secrets
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -28,7 +33,25 @@ from qcn_mcp_bridge.auth.session_crypto import encrypt_session
 from qcn_mcp_bridge.auth.storage import find_binding, upsert_binding
 
 
+log = logging.getLogger(__name__)
+
+
 SESSION_COOKIE_NAME = "qcn_bridge_session"
+
+# ============================================================================
+# Phase 2B2 Step 1: dev backdoor 常量
+# ----------------------------------------------------------------------------
+# 仅当 build_oauth_asgi 的 dev_mode=True 时启用 (由 QCN_BRIDGE_DEV_LOGIN 控制).
+# 进程内 SMS 码 (one-time use, 不持久化). 生产环境严禁开.
+# ============================================================================
+DEV_PENDING_CODES: dict[str, str] = {}     # phone -> 6 位 verification code
+DEV_USER_ID = 99999                        # 哨兵值, 与生产 5 位 user_id 区分
+DEV_TENANT_ID = 42                         # 沿用现有 binding 默认值
+
+
+def _generate_dev_code() -> str:
+    """6 位 0-9 数字码 (与企采牛真通道一致, 5-6 位都可能)."""
+    return f"{secrets.randbelow(1_000_000):06d}"
 
 
 def _set_session_cookie(response: Response, user_id: int) -> None:
@@ -93,10 +116,37 @@ def _persist_session(
         session.close()
 
 
-def make_send_code_handler(qcn_dev: QcnDevClient):
+def make_send_code_handler(
+    qcn_dev: QcnDevClient,
+    *,
+    dev_mode: bool = False,
+):
     async def send_code_post(request: Request):
         body = await request.json()
         phone = body.get("phone", "")
+
+        # Dev backdoor: 不真打 SMS, 直接生成 6 位码放回响应体 (one-time use)
+        if dev_mode:
+            if not phone:
+                return JSONResponse(
+                    {"ok": False, "error": "dev_mode", "error_description": "phone is required"},
+                    status_code=400,
+                )
+            code = _generate_dev_code()
+            DEV_PENDING_CODES[phone] = code
+            log.warning(
+                "[DEV] send-code: phone=<REDACTED> code_length=%d (one-time use)",
+                len(code),
+            )
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "code": code,
+                    "dev_mode": True,
+                    "message": "DEV: code returned for testing (do not enable in production)",
+                }
+            )
+
         try:
             await qcn_dev.send_code(phone)
             return JSONResponse({"ok": True, "message": "验证码已发送"})
@@ -115,20 +165,38 @@ def make_send_code_handler(qcn_dev: QcnDevClient):
 
 
 def make_login_form_handler(
-    *, qcn_dev: QcnDevClient, SessionLocal: sessionmaker
+    *,
+    qcn_dev: QcnDevClient,
+    SessionLocal: sessionmaker,
+    dev_mode: bool = False,
 ):
     async def login_form_post(request: Request):
         form = await request.form()
         phone = form.get("phone", "")
         code = form.get("code", "")
 
-        # 1) 调 qcn-dev /login 拿 auth_token + user_id
-        try:
-            login_result = await qcn_dev.login(phone, code)
-        except QcnDevBusinessError as exc:
-            return _redirect_with_error(form, exc.message[:80] if exc.message else "登录失败")
-        except QcnDevTransportError:
-            return _redirect_with_error(form, "登录服务暂时不可用")
+        # Dev backdoor: 校验进程内码 (one-time use), 返回 mock login_result
+        if dev_mode:
+            expected = DEV_PENDING_CODES.pop(phone, None)
+            if expected is None or expected != code:
+                log.warning("[DEV] login-form: invalid or expired code for phone=<REDACTED>")
+                return _redirect_with_error(form, "验证码无效或已过期 (DEV)")
+            login_result = {
+                "auth_token": f"DEV-AUTH-{secrets.token_urlsafe(8)}",
+                "user_id": DEV_USER_ID,
+                "tenant_id": DEV_TENANT_ID,
+                "eim_name": "DEV-开发测试公司",
+                "phone": phone,
+                "all_users": [],
+            }
+            log.warning("[DEV] login-form: accepted code user_id=%d (sentinel)", DEV_USER_ID)
+        else:
+            try:
+                login_result = await qcn_dev.login(phone, code)
+            except QcnDevBusinessError as exc:
+                return _redirect_with_error(form, exc.message[:80] if exc.message else "登录失败")
+            except QcnDevTransportError:
+                return _redirect_with_error(form, "登录服务暂时不可用")
 
         # 2) AES-GCM 加密 session + 写 bindings (Phase 2B1 Step 2 简化: 单 user_id)
         _persist_session(

@@ -90,6 +90,7 @@ def _build_main_app(
         db_path=settings.qcn_bridge_db_path,
         jwt_key_path=Path(settings.qcn_bridge_jwt_key_path),
         qcn_dev_client=qcn_dev_client,
+        dev_mode=settings.qcn_bridge_dev_login,   # Phase 2B2 Step 1
     )
 
     # Phase 1B: Bearer 校验中间件

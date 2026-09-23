@@ -45,7 +45,7 @@ def _mock_qcn_dev():
     return mock
 
 
-def _build_app_with_real_key(tmp_db, qcn_dev_client=None):
+def _build_app_with_real_key(tmp_db, qcn_dev_client=None, dev_mode=False):
     """构造一个真 RSA 私钥的 oauth_asgi app (生产部署也是真密钥).
 
     关键: 用 tmp_db 的 db_path (不是 tempfile.gettempdir()), 保证 OAuth app 跟
@@ -53,6 +53,9 @@ def _build_app_with_real_key(tmp_db, qcn_dev_client=None):
 
     qcn_dev_client: Phase 2B1 Step 2 真实调 (server.py 注入).
                   测试传 _mock_qcn_dev() 避免真打 qcn-dev.
+    dev_mode:        Phase 2B2 Step 1 dev backdoor (QCN_BRIDGE_DEV_LOGIN).
+                  True 时短路 qcn-dev, /send-code + /login-form 走进程内
+                  DEV_PENDING_CODES (one-time use). 生产必须 False.
     """
     db_path, SessionLocal = tmp_db
     key_path = Path(tempfile.gettempdir()) / f"login_key_{id(tmp_db)}.pem"
@@ -69,6 +72,7 @@ def _build_app_with_real_key(tmp_db, qcn_dev_client=None):
         db_path=db_path,
         jwt_key_path=key_path,
         qcn_dev_client=qcn_dev_client if qcn_dev_client is not None else _mock_qcn_dev(),
+        dev_mode=dev_mode,
     )
 
 
@@ -346,3 +350,86 @@ def test_authorize_deny_returns_error_redirect(tmp_db):
     assert loc.startswith("https://app/cb")
     assert "error=access_denied" in loc
     assert "state=mock-state" in loc
+
+
+# ============================================================================
+# Phase 2B2 Step 1 — dev backdoor (QCN_BRIDGE_DEV_LOGIN=true)
+# ----------------------------------------------------------------------------
+# 这 3 个 case 验证 dev_mode 短路 qcn-dev, 让 OAuth 全链路能在本地无 SMS 通道
+# 的情况下闭环. dev_mode=False 走真 qcn-dev (默认, 生产路径).
+# ============================================================================
+
+def test_send_code_dev_mode_returns_code_in_body(tmp_db):
+    """dev_mode=True → POST /oauth/send-code 把 6 位码直接回写到响应 JSON."""
+    app = _build_app_with_real_key(tmp_db, dev_mode=True)
+    client = TestClient(app)
+    r = client.post("/send-code", json={"phone": "13800000001"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["dev_mode"] is True
+    assert "code" in body
+    assert len(body["code"]) == 6 and body["code"].isdigit()
+
+
+def test_login_form_dev_mode_accepts_code_without_qcn_dev(tmp_db):
+    """dev_mode=True → POST /oauth/login-form 校验进程内码 (不真打 qcn-dev)."""
+    from urllib.parse import unquote
+    from qcn_mcp_bridge.auth.handlers_login import DEV_PENDING_CODES, _generate_dev_code
+
+    # 1) 进程内预填一个测试码 (避开 test_send_code_dev_mode_returns_code_in_body 的污染)
+    phone = "13800000002"
+    code = _generate_dev_code()
+    DEV_PENDING_CODES[phone] = code
+
+    app = _build_app_with_real_key(tmp_db, dev_mode=True)
+    _, SL = tmp_db
+    client_id = _register_one(SL)["client_id"]
+    client = TestClient(app)
+
+    # 2) login-form 用该码 → 303 + cookie + 走 /oauth/authorize
+    r = client.post(
+        "/login-form",
+        data={
+            "phone": phone,
+            "code": code,
+            "state": "mock-state",
+            "code_challenge": "mock-challenge",
+            "code_challenge_method": "S256",
+            "redirect_uri": "https://app/cb",
+            "client_id": client_id,
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "qcn_bridge_session" in r.cookies
+    assert r.headers["location"].startswith("/oauth/authorize")
+
+    # 3) 一码一用 — 同一码再 login 应失败
+    r2 = client.post(
+        "/login-form",
+        data={
+            "phone": phone,
+            "code": code,
+            "state": "mock-state",
+            "code_challenge": "mock-challenge",
+            "code_challenge_method": "S256",
+            "redirect_uri": "https://app/cb",
+            "client_id": client_id,
+        },
+        follow_redirects=False,
+    )
+    assert r2.status_code == 303
+    assert "无效或已过期" in unquote(r2.headers["location"])
+
+
+def test_send_code_production_mode_does_not_echo_code(tmp_db):
+    """dev_mode=False (默认) → POST /oauth/send-code 必须不把码放回响应体."""
+    app = _build_app_with_real_key(tmp_db, dev_mode=False)
+    client = TestClient(app)
+    r = client.post("/send-code", json={"phone": "13800000003"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert "code" not in body   # 生产模式绝对不回码
+    assert "message" in body
