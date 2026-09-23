@@ -76,13 +76,20 @@ def _build_main_app(
       - Bearer 但 JWT 签名/aud/exp 错 → 401
       - 查 token 表 (按 SHA256 哈希) 看是否 revoked
       - 注入 current_user 到 request.state, tool handler 通过 Context 拿
+
+    Phase 2B1: 真接 qcn-dev (QcnDevClient). settings.qcn_base_url 是公网 qcniu.cn/
     """
-    # OAuth sub-app (Phase 1A)
+    # Phase 2B1: 真接 qcn-dev (按 CLAUDE §6.3.2 不展示 JWT, 但 URL 是公开 §6.4)
+    from qcn_mcp_bridge.auth.qcn_dev_client import QcnDevClient
+    qcn_dev_client = QcnDevClient(settings)
+
+    # OAuth sub-app (Phase 1A + 注入 qcn-dev 客户端)
     oauth_asgi = build_oauth_asgi(
         issuer=settings.qcn_bridge_issuer,
         resource=settings.qcn_bridge_resource,
         db_path=settings.qcn_bridge_db_path,
         jwt_key_path=Path(settings.qcn_bridge_jwt_key_path),
+        qcn_dev_client=qcn_dev_client,
     )
 
     # Phase 1B: Bearer 校验中间件
@@ -106,6 +113,7 @@ def _build_main_app(
         required_scope=None,
     )
 
+    log.info("qcn-dev client ready: base_url=%s (真接公网 qcniu.cn)", settings.qcn_base_url)
     return Starlette(
         routes=[
             # /.well-known/oauth-protected-resource + /.well-known/oauth-authorization-server
