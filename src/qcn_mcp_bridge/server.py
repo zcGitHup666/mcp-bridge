@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import anyio
 import uvicorn
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
@@ -49,6 +52,18 @@ def build_server(
         name="qcn-mcp-bridge",
         host=settings.mcp_http_host,
         port=settings.mcp_http_port,
+        # Phase 2B2 Step 1 deploy fix: FastMCP 1.30 默认 routes 在 /mcp, 但
+        #           Bridge 用 Mount("/mcp", ...) 会剥前缀, inner 拿到 / 跟
+        #           FastMCP 的 /mcp 路由不匹配 → 404. 改成 root route 解决.
+        streamable_http_path="/",
+        # Phase 2B2 Step 1 deploy fix: nginx 反代时 Host header 是 cc.qicainiu.com,
+        #           FastMCP 默认 DNS rebinding 防护会拒 ("Invalid Host header").
+        #           关掉 + 加白名单.
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+            allowed_hosts=["cc.qicainiu.com", "127.0.0.1", "localhost"],
+            allowed_origins=["https://cc.qicainiu.com"],
+        ),
     )
 
     demand_tools.register(mcp, client)
@@ -99,6 +114,15 @@ def _build_main_app(
     from qcn_mcp_bridge.auth.middleware import BearerAuthMiddleware
     from qcn_mcp_bridge.auth.storage import init_engine
 
+    # Phase 2B2 Step 1 deploy fix: FastMCP streamable_http_app() 内部要 anyio task
+    #           group, 但被 Mount 包了一层后 inner Starlette lifespan 不触发.
+    #           在 main_app lifespan 里手动喂给 session manager.
+    @asynccontextmanager
+    async def _mcp_lifespan(_app):
+        async with anyio.create_task_group() as tg:
+            mcp._session_manager._task_group = tg
+            yield
+
     engine, SessionLocal = init_engine(settings.qcn_bridge_db_path)
     bridge_jwt_signer = JWTSigner(
         Path(settings.qcn_bridge_jwt_key_path),
@@ -116,6 +140,7 @@ def _build_main_app(
 
     log.info("qcn-dev client ready: base_url=%s (真接公网 qcniu.cn)", settings.qcn_base_url)
     return Starlette(
+        lifespan=_mcp_lifespan,  # Phase 2B2 Step 1: 初始化 FastMCP session manager task group
         routes=[
             # /.well-known/oauth-protected-resource + /.well-known/oauth-authorization-server
             Mount("/.well-known", oauth_asgi),

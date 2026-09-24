@@ -18,3 +18,17 @@ authlib>=1.3.0
 sqlalchemy>=2.0.0
 # RSA / ECDSA JWT 签发 + 校验
 pyjwt[crypto]>=2.8.0
+
+# --- Phase 2B2 Step 1 deploy fixes ---
+# ASGI server (uvicorn 需要 standard extras: httptools/uvloop/watchfiles)
+uvicorn[standard]>=0.27
+# multipart form parser (OAuth /oauth/login-form 用)
+python-multipart>=0.0.6
+# Starlette (FastMCP streamable_http_app() 内部依赖)
+starlette>=0.40
+# Jinja2 (starlette.templating 渲染 login.html / consent.html)
+jinja2>=3.0
+# itsdangerous (session cookie 签名)
+itsdangerous>=2.0
+# greenlet <3 (CentOS 7 + pyenv Python 3.11 + 老 g++ 4.8.5 编不过 greenlet 3.x)
+greenlet<3
