@@ -244,7 +244,27 @@ def build_oauth_asgi(
     login_form = make_login_form_handler(
         qcn_dev=qcn_dev_client, SessionLocal=SessionLocal, dev_mode=dev_mode,  # Phase 2B2 Step 1
     )
-    register_form = make_register_form_handler(qcn_dev=qcn_dev_client, SessionLocal=SessionLocal)
+    register_form_post = make_register_form_handler(qcn_dev=qcn_dev_client, SessionLocal=SessionLocal)
+    # Phase 2B2 Step 2: GET 请求渲染 register.html (UI 自注册入口).
+    # POST 部分委托给原 register_form_post 工厂(调 qcn-dev register API).
+    async def register_form_endpoint(request: Request):
+        if request.method == "GET":
+            return templates.TemplateResponse(
+                request, "register.html",
+                {
+                    "state": request.query_params.get("state", ""),
+                    "code_challenge": request.query_params.get("code_challenge", ""),
+                    "code_challenge_method": request.query_params.get("code_challenge_method", ""),
+                    "redirect_uri": request.query_params.get("redirect_uri", ""),
+                    "client_id": request.query_params.get("client_id", ""),
+                    "phone": "",
+                    "company_new": "",
+                    "error": None,
+                },
+            )
+        # POST: 委托给原 POST 工厂
+        return await register_form_post(request)
+
     send_code = make_send_code_handler(
         qcn_dev=qcn_dev_client, dev_mode=dev_mode,   # Phase 2B2 Step 1
     )
@@ -260,6 +280,6 @@ def build_oauth_asgi(
         Route("/authorize", authorize_get, methods=["GET"]),
         Route("/authorize", authorize_post, methods=["POST"]),
         Route("/login-form", login_form, methods=["POST"]),
-        Route("/register-form", register_form, methods=["POST"]),
+        Route("/register-form", register_form_endpoint, methods=["GET", "POST"]),  # Phase 2B2 Step 2
         Route("/send-code", send_code, methods=["POST"]),
     ])

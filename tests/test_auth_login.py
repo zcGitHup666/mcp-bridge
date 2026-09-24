@@ -490,3 +490,43 @@ def test_logout_endpoint_clears_session_cookie(tmp_db):
     assert "qcn_bridge_session" in set_cookie
     # Starlette delete_cookie 默认发 max-age=0 (立即过期)
     assert "max-age=0" in set_cookie.lower()
+
+
+def test_register_form_get_renders_form_with_oauth_params(tmp_db):
+    """GET /register-form → 渲染 register.html, OAuth 参数 (state/code_challenge/...) 透传到 hidden fields."""
+    app = _build_app_with_real_key(tmp_db)
+    client = TestClient(app)
+
+    # 模拟 OAuth authorize redirect 过来的 register-form URL
+    params = (
+        "state=mock-state-xyz"
+        "&code_challenge=mock-challenge-abc"
+        "&code_challenge_method=S256"
+        "&redirect_uri=https://app/cb"
+        "&client_id=test-client-id"
+    )
+    r = client.get(f"/register-form?{params}")
+    assert r.status_code == 200
+
+    # 渲染了 register.html (含 "账号注册" 标题)
+    assert "账号注册" in r.text
+    assert "企采牛 MCP Bridge" in r.text
+
+    # OAuth 参数透传到 hidden fields (用户提交表单后还能透传给 /oauth/authorize)
+    assert 'value="mock-state-xyz"' in r.text
+    assert 'value="mock-challenge-abc"' in r.text
+    assert 'value="S256"' in r.text
+    assert 'value="https://app/cb"' in r.text
+    assert 'value="test-client-id"' in r.text
+
+    # 注册字段齐了
+    assert 'name="phone"' in r.text
+    assert 'name="company_new"' in r.text
+    assert 'name="code"' in r.text
+    assert 'name="password"' in r.text
+    assert 'name="password_confirm"' in r.text
+    assert 'name="agree"' in r.text
+
+    # 底部 "已有账号？点此登录" 链到 login-form, 也带 OAuth params
+    assert "/login-form?" in r.text
+    assert "state=mock-state-xyz" in r.text
