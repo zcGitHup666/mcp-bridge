@@ -141,6 +141,14 @@ def build_oauth_asgi(
         finally:
             session.close()
 
+    # ===== /oauth/logout (OIDC RP-Initiated Logout, Phase 2B2 Step 2) =====
+    # POST /oauth/logout → 清 qcn_bridge_session cookie (user 切账号前置)
+    async def logout_endpoint(request: Request):
+        response = JSONResponse({"ok": True})
+        # delete_cookie 走默认 path=/, 不指定 domain 让浏览器按当前 host 匹配
+        response.delete_cookie(SESSION_COOKIE_NAME)
+        return response
+
     # ===== /oauth/revoke (RFC 7009, Phase 2B2 Step 1) =====
     async def revoke_endpoint(request: Request):
         form: dict[str, str] = {}
@@ -186,7 +194,13 @@ def build_oauth_asgi(
         if err is not None:
             return err
 
+        # Phase 2B2 Step 2: force_login=true query param 跳过 session cookie,
+        #           强制渲染 login.html (OIDC prompt=login 的 Bridge 等价物,
+        #           用于切换账号场景)
+        force_login = query.get("force_login", "").lower() in ("true", "1")
         user_id = _get_session_user_id(request)
+        if force_login:
+            user_id = None
 
         if user_id is None:
             # 1) 未登录 → render login.html
@@ -242,6 +256,7 @@ def build_oauth_asgi(
         Route("/register", register_endpoint, methods=["POST"]),
         Route("/token", token_endpoint, methods=["POST"]),
         Route("/revoke", revoke_endpoint, methods=["POST"]),   # Phase 2B2 Step 1
+        Route("/logout", logout_endpoint, methods=["POST"]),    # Phase 2B2 Step 2
         Route("/authorize", authorize_get, methods=["GET"]),
         Route("/authorize", authorize_post, methods=["POST"]),
         Route("/login-form", login_form, methods=["POST"]),

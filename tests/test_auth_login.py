@@ -433,3 +433,60 @@ def test_send_code_production_mode_does_not_echo_code(tmp_db):
     assert body["ok"] is True
     assert "code" not in body   # 生产模式绝对不回码
     assert "message" in body
+
+
+# ============================================================================
+# Phase 2B2 Step 2 — user-switch 支持 (force_login + /oauth/logout)
+# ----------------------------------------------------------------------------
+# 解决老 user session cookie 不清导致切不了账号的问题:
+# 1) GET /oauth/authorize?force_login=true  → 跳过 cookie, 强制渲染 login.html
+# 2) POST /oauth/logout                     → 清 qcn_bridge_session cookie
+# ============================================================================
+
+def test_authorize_force_login_bypasses_cookie(tmp_db):
+    """force_login=true query param → 即使有 session cookie 也走 login.html."""
+    app = _build_app_with_real_key(tmp_db)
+    _, SL = tmp_db
+    client_id = _register_one(SL)["client_id"]
+    client = TestClient(app)
+    auth_url = _authorize_url(client_id)
+
+    # (a) 带 cookie 但无 force_login → 渲染 consent (老 user 跳过登录)
+    r_with_cookie = client.get(
+        auth_url,
+        cookies={"qcn_bridge_session": "user_id=99999"},
+    )
+    assert r_with_cookie.status_code == 200
+    assert "授权请求" in r_with_cookie.text   # consent 页特征
+
+    # (b) 带 cookie + force_login=true → 强制渲染 login.html
+    r_force = client.get(
+        f"{auth_url}&force_login=true",
+        cookies={"qcn_bridge_session": "user_id=99999"},
+    )
+    assert r_force.status_code == 200
+    assert "账号登录" in r_force.text         # login 页特征 (不是 consent)
+
+    # (c) force_login=false/缺省 → 行为跟 (a) 一致
+    r_explicit_false = client.get(
+        f"{auth_url}&force_login=false",
+        cookies={"qcn_bridge_session": "user_id=99999"},
+    )
+    assert r_explicit_false.status_code == 200
+    assert "授权请求" in r_explicit_false.text
+
+
+def test_logout_endpoint_clears_session_cookie(tmp_db):
+    """POST /oauth/logout → 响应 Set-Cookie 把 qcn_bridge_session 置为 max-age=0."""
+    app = _build_app_with_real_key(tmp_db)
+    client = TestClient(app)
+
+    r = client.post("/logout")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    # Set-Cookie 头必须把 qcn_bridge_session 标记为过期
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "qcn_bridge_session" in set_cookie
+    # Starlette delete_cookie 默认发 max-age=0 (立即过期)
+    assert "max-age=0" in set_cookie.lower()
